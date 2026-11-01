@@ -6,8 +6,13 @@ namespace fbx::xrender {
 
 std::expected<void, std::error_code> DisplayList::addCommand(fbx::shared::CommandType type, std::span<const uint8_t> data) noexcept {
     try {
-        uint32_t offset = static_cast<uint32_t>(data_buffer_.size());
-        
+        // Start every record on an 8-byte boundary: consumers read the
+        // RectData/TextData/ImageData (which holds a pointer) in place, and a
+        // record after a DrawText's variable-length string otherwise landed at
+        // an odd offset — misaligned loads (UB; flagged by UBSan in every app).
+        constexpr size_t kAlign = 8;
+        uint32_t offset = static_cast<uint32_t>((data_buffer_.size() + kAlign - 1) & ~(kAlign - 1));
+
         if (!data.empty()) {
             data_buffer_.resize(offset + data.size());
             std::memcpy(data_buffer_.data() + offset, data.data(), data.size());
