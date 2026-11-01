@@ -42,6 +42,8 @@ public:
     [[nodiscard]] static TextShaper& getInstance() noexcept;
 
 private:
+    void fillMissing(const std::string& utf8_text, hb_font_t* font, uint32_t face_id,
+                     std::vector<ShapedGlyph>& result) noexcept;
     hb_buffer_t* hb_buffer_{nullptr};
 
     // Shape a text run with a specific font; fills result in-place.

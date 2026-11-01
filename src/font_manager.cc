@@ -66,6 +66,8 @@ struct FaceKeyHash {
 
 std::unordered_map<FaceKey, std::unique_ptr<FontFace>, FaceKeyHash> g_face_cache;
 std::unique_ptr<FontFace> g_emoji_face;
+std::unique_ptr<FontFace> g_last_resort_face;
+bool g_last_resort_tried = false;
 std::mutex                g_mutex;
 std::atomic<uint32_t>     g_next_face_id{1};
 bool                      g_fc_ready{false};
@@ -193,6 +195,8 @@ void FontManager::cleanup() noexcept {
     std::lock_guard lk(g_mutex);
     g_face_cache.clear();
     g_emoji_face.reset();
+    g_last_resort_face.reset();
+    g_last_resort_tried = false;
     FcFini();
 }
 
@@ -262,6 +266,36 @@ FontFace* FontManager::getEmojiFace() noexcept {
     return nullptr;
 }
 
+FontFace* FontManager::getLastResortFace() noexcept {
+    {
+        std::lock_guard lk(g_mutex);
+        if (g_last_resort_tried) return g_last_resort_face.get();
+    }
+    std::unique_ptr<FontFace> found;
+    for (const char* family : {"DejaVu Sans", "DejaVu Sans Mono"}) {
+        std::string path = resolveViaFontconfig(family, FontWeight::Regular, FontStyle::Normal);
+        if (path.empty()) continue;
+        auto face = loadFace(path, FontWeight::Regular, FontStyle::Normal);
+        // Fontconfig substitutes when a family is absent: require an arrow (←).
+        if (face && face->ft_face_ && FT_Get_Char_Index(face->ft_face_, 0x2190) != 0) {
+            found = std::move(face);
+            break;
+        }
+    }
+    std::lock_guard lk(g_mutex);
+    if (!g_last_resort_tried) {
+        g_last_resort_tried = true;
+        g_last_resort_face = std::move(found);
+    }
+    return g_last_resort_face.get();
+}
+
+FontFace* FontManager::faceForId(uint32_t face_id, FontFace* primary) noexcept {
+    if (FontFace* e = getEmojiFace(); e && e->face_id_ == face_id) return e;
+    if (FontFace* l = getLastResortFace(); l && l->face_id_ == face_id) return l;
+    return primary;
+}
+
 void FontManager::ensureGlyphs(const std::string& utf8_text,
                                 FontFace*          face,
                                 GlyphCache&        cache) noexcept {
@@ -280,10 +314,10 @@ void FontManager::ensureGlyphs(const std::string& utf8_text,
     for (const auto& g : glyphs) {
         if (g.glyph_index_ == 0) continue; // uncovered by every face — nothing to add
         if (cache.lookup(g.face_id_, g.glyph_index_)) continue;
-        // A glyph carrying the emoji face id was resolved against the emoji face;
-        // rasterise it from that face, everything else from the primary.
-        FT_Face ft = (emoji && g.face_id_ == emoji->face_id_) ? emoji->ft_face_
-                                                              : face->ft_face_;
+        // Rasterise each glyph from the face it was resolved against (the
+        // primary, the emoji face or the last-resort face).
+        FontFace* from = faceForId(g.face_id_, face);
+        FT_Face ft = from ? from->ft_face_ : nullptr;
         if (ft) cache.addGlyph(ft, g.face_id_, g.glyph_index_);
     }
 }
@@ -306,8 +340,12 @@ float FontManager::measureText(const std::string& utf8_text,
     if (!face) return static_cast<float>(utf8_text.size()) * fontSize * 0.5f;
 
     auto& shaper = TextShaper::getInstance();
+    // Measure with the same fallbacks text is drawn with: a glyph the face
+    // lacks (←, ⏏) used to measure as nothing, so its button collapsed.
+    FontFace* emoji = getEmojiFace();
     auto  glyphs = shaper.shapeText(utf8_text, face->hb_font_, face->face_id_,
-                                     nullptr, 0);
+                                     emoji ? emoji->hb_font_ : nullptr,
+                                     emoji ? emoji->face_id_ : 0);
 
     float scale = fontSize / GlyphCache::kRefSize;
     float total = 0.0f;

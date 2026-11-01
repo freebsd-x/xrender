@@ -342,9 +342,8 @@ void TypographyBackend::addText(const fbx::shared::TextData& td,
     for (const auto& sg : glyphs) {
         const GlyphMetric* m = cache_->lookup(sg.face_id_, sg.glyph_index_);
         if (!m) {
-            FT_Face ft = (sg.face_id_ == face->face_id_)
-                         ? face->ft_face_
-                         : (emoji ? emoji->ft_face_ : nullptr);
+            FontFace* from = FontManager::faceForId(sg.face_id_, face);   // primary / emoji / last resort
+            FT_Face ft = from ? from->ft_face_ : nullptr;
             if (ft) cache_->addGlyph(ft, sg.face_id_, sg.glyph_index_);
         }
     }

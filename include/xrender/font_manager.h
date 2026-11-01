@@ -73,6 +73,14 @@ public:
     // Returns the emoji fallback face (Noto Color Emoji / similar), or nullptr.
     [[nodiscard]] static FontFace* getEmojiFace() noexcept;
 
+    // Last-resort fallback (DejaVu Sans): arrows, ⏏, ✕ and other symbols that
+    // neither the UI font (Noto Sans) nor the emoji/symbols face covers.
+    // Returns nullptr if no such font is installed.
+    [[nodiscard]] static FontFace* getLastResortFace() noexcept;
+
+    // The fallback faces glyphs may come from, in order (emoji, last resort).
+    [[nodiscard]] static FontFace* faceForId(uint32_t face_id, FontFace* primary) noexcept;
+
     // Pre-warm glyph cache: shape utf8_text with face and ensure every resulting
     // glyph is present in cache.  Call this before rendering each text string.
     static void ensureGlyphs(const std::string& utf8_text,
