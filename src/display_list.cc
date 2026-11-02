@@ -1,4 +1,5 @@
 #include "xrender/display_list.h"
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 
@@ -57,6 +58,17 @@ void DisplayList::scaleAlphaFrom(size_t from_index, float factor) noexcept {
             }
             default: break;  // images / transforms / scissors carry no alpha to scale
         }
+    }
+}
+
+void DisplayList::transformRectColors(size_t from, size_t to,
+                                      void (*fn)(float& r, float& g, float& b, float a)) noexcept {
+    to = std::min(to, commands_.size());
+    for (size_t i = from; i < to; ++i) {
+        const auto& cmd = commands_[i];
+        if (cmd.type_ != fbx::shared::CommandType::DrawRect || cmd.data_size_ == 0) continue;
+        auto* r = reinterpret_cast<fbx::shared::RectData*>(data_buffer_.data() + cmd.data_offset_);
+        fn(r->r_, r->g_, r->b_, r->a_);
     }
 }
 

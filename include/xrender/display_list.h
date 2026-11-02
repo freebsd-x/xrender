@@ -35,6 +35,12 @@ public:
     // disabled control — after it has painted itself and its children.
     void scaleAlphaFrom(size_t from_index, float factor) noexcept;
 
+    // Rewrite the fill colour (r, g, b; alpha read-only) of every DrawRect
+    // command in [from, to) through `fn`. Used to adapt a node's own
+    // hard-coded fills to the light theme after it painted them.
+    void transformRectColors(size_t from, size_t to,
+                             void (*fn)(float& r, float& g, float& b, float a)) noexcept;
+
     void clear() noexcept;
 
 private:
