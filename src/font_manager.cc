@@ -174,7 +174,9 @@ std::unique_ptr<FontFace> loadFace(const std::string& path,
     FT_Set_Pixel_Sizes(f->ft_face_, 0, static_cast<FT_UInt>(GlyphCache::kRefSize));
 
     f->hb_font_ = hb_ft_font_create(f->ft_face_, nullptr);
-    hb_ft_font_set_load_flags(f->hb_font_, FT_LOAD_DEFAULT);
+    // Unhinted advances: text is drawn scaled from this reference size, and hinting would
+    // round each advance to a whole pixel of it, an error every glyph at every size repeats.
+    hb_ft_font_set_load_flags(f->hb_font_, FT_LOAD_NO_HINTING);
 
     applyVariableWeight(f->ft_lib_, f->ft_face_, f->hb_font_, weight);
 
