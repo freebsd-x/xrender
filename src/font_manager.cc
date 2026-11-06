@@ -29,7 +29,8 @@ FontFace::FontFace(FontFace&& o) noexcept
     : ft_lib_(std::exchange(o.ft_lib_, nullptr)),
       ft_face_(std::exchange(o.ft_face_, nullptr)),
       hb_font_(std::exchange(o.hb_font_, nullptr)),
-      face_id_(std::exchange(o.face_id_, 0u)) {}
+      face_id_(std::exchange(o.face_id_, 0u)),
+      memory_(std::move(o.memory_)) {}
 
 FontFace& FontFace::operator=(FontFace&& o) noexcept {
     if (this != &o) {
@@ -40,6 +41,7 @@ FontFace& FontFace::operator=(FontFace&& o) noexcept {
         ft_face_ = std::exchange(o.ft_face_, nullptr);
         hb_font_ = std::exchange(o.hb_font_, nullptr);
         face_id_ = std::exchange(o.face_id_, 0u);
+        memory_  = std::move(o.memory_);
     }
     return *this;
 }
@@ -158,9 +160,11 @@ void applyVariableWeight(FT_Library lib, FT_Face face,
     }
 }
 
+// From a file, or from memory if there are bytes.
 std::unique_ptr<FontFace> loadFace(const std::string& path,
                                     FontWeight         weight,
-                                    FontStyle          /*style*/) noexcept {
+                                    FontStyle          /*style*/,
+                                    std::shared_ptr<const std::string> memory = nullptr) noexcept {
     auto f = std::make_unique<FontFace>();
     f->face_id_ = g_next_face_id.fetch_add(1, std::memory_order_relaxed);
 
@@ -168,7 +172,15 @@ std::unique_ptr<FontFace> loadFace(const std::string& path,
         std::cerr << "[xrender] FontManager: FT_Init_FreeType failed\n";
         return nullptr;
     }
-    if (FT_New_Face(f->ft_lib_, path.c_str(), 0, &f->ft_face_)) {
+    if (memory) {
+        f->memory_ = std::move(memory);
+        if (FT_New_Memory_Face(f->ft_lib_, reinterpret_cast<const FT_Byte*>(f->memory_->data()),
+                               static_cast<FT_Long>(f->memory_->size()), 0, &f->ft_face_)) {
+            return nullptr;
+        }
+        // Bitmap-only and the like can't be drawn at any size.
+        if (!FT_IS_SCALABLE(f->ft_face_)) return nullptr;
+    } else if (FT_New_Face(f->ft_lib_, path.c_str(), 0, &f->ft_face_)) {
         std::cerr << "[xrender] FontManager: failed to load face: " << path << "\n";
         return nullptr;
     }
@@ -235,6 +247,25 @@ FontFace* FontManager::getFace(const std::string& family,
         return fallback;
     }
 
+    std::lock_guard lk(g_mutex);
+    auto [it, ok] = g_face_cache.emplace(key, std::move(face));
+    return it->second.get();
+}
+
+FontFace* FontManager::addMemoryFace(const std::string& family,
+                                      FontWeight weight,
+                                      FontStyle style,
+                                      std::shared_ptr<const std::string> bytes,
+                                      FontWeight variable_weight) noexcept {
+    if (!bytes || bytes->empty()) return nullptr;
+    const FaceKey key{family, weight, style};
+    {
+        std::lock_guard lk(g_mutex);
+        const auto it = g_face_cache.find(key);
+        if (it != g_face_cache.end()) return it->second.get();
+    }
+    auto face = loadFace({}, variable_weight, style, std::move(bytes));
+    if (!face) return nullptr;
     std::lock_guard lk(g_mutex);
     auto [it, ok] = g_face_cache.emplace(key, std::move(face));
     return it->second.get();

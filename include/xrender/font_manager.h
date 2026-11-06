@@ -42,6 +42,7 @@ struct FontFace {
     FT_Face    ft_face_{nullptr};
     hb_font_t* hb_font_{nullptr};
     uint32_t   face_id_{0}; // Unique ID assigned by FontManager (never 0)
+    std::shared_ptr<const std::string> memory_; // what a face opened from memory is reading
 
     FontFace() noexcept = default;
     ~FontFace() noexcept;
@@ -69,6 +70,16 @@ public:
         FontWeight weight = FontWeight::Regular,
         FontStyle  style  = FontStyle::Normal
     ) noexcept;
+
+    // A face from bytes in memory (woff, woff2, ttf, otf), found afterwards by getFace with
+    // this family, weight and style. Null if it can't be opened. `variable_weight` is what
+    // a variable font is set to. Nothing but FreeType looks at the bytes, which may be
+    // anything: a web page's, say.
+    [[nodiscard]] static FontFace* addMemoryFace(const std::string& family,
+                                                 FontWeight weight,
+                                                 FontStyle style,
+                                                 std::shared_ptr<const std::string> bytes,
+                                                 FontWeight variable_weight) noexcept;
 
     // Returns the emoji fallback face (Noto Color Emoji / similar), or nullptr.
     [[nodiscard]] static FontFace* getEmojiFace() noexcept;
