@@ -65,6 +65,7 @@ struct FaceKeyHash {
 };
 
 std::unordered_map<FaceKey, std::unique_ptr<FontFace>, FaceKeyHash> g_face_cache;
+std::unordered_map<FaceKey, FontFace*, FaceKeyHash> g_face_substitutes;
 std::unique_ptr<FontFace> g_emoji_face;
 std::unique_ptr<FontFace> g_last_resort_face;
 bool g_last_resort_tried = false;
@@ -211,6 +212,8 @@ FontFace* FontManager::getFace(const std::string& family,
         std::lock_guard lk(g_mutex);
         auto it = g_face_cache.find(key);
         if (it != g_face_cache.end()) return it->second.get();
+        auto substitute = g_face_substitutes.find(key);
+        if (substitute != g_face_substitutes.end()) return substitute->second;
     }
 
     std::string path = resolveViaFontconfig(family, weight, style);
@@ -221,7 +224,16 @@ FontFace* FontManager::getFace(const std::string& family,
     }
 
     auto face = loadFace(path, weight, style);
-    if (!face) return nullptr;
+    if (!face) {
+        // Usually the sandbox: a face not opened before it can't be opened at all. Keep
+        // the text showing in something already loaded, and don't try this one again.
+        FontFace* fallback = nullptr;
+        if (!family.empty()) fallback = getFace({}, weight, style);
+        if (!fallback && (weight != FontWeight::Regular || style != FontStyle::Normal)) fallback = getFace({}, FontWeight::Regular, FontStyle::Normal);
+        std::lock_guard lk(g_mutex);
+        g_face_substitutes[key] = fallback;
+        return fallback;
+    }
 
     std::lock_guard lk(g_mutex);
     auto [it, ok] = g_face_cache.emplace(key, std::move(face));
