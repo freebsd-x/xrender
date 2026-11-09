@@ -62,6 +62,11 @@ public:
     static void init() noexcept;    // Call once at startup (initialises Fontconfig).
     static void cleanup() noexcept; // Call once at shutdown.
 
+    // A directory of fonts opened before a sandbox (capability mode) shuts out paths:
+    // a face whose file is under `dir` can still be loaded, through `fd` (openat). The
+    // descriptor needs lookup and read rights; the manager keeps it.
+    static void addFontRoot(const std::string& dir, int fd) noexcept;
+
     // Look up (or load) a font face matching the given description.
     // An empty family string means "default UI font" (the system sans-serif).
     // Returns nullptr if the font cannot be found or loaded.

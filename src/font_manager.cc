@@ -9,8 +9,14 @@
 #include <hb.h>
 #include <hb-ft.h>
 
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <iostream>
+#include <memory>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -160,6 +166,40 @@ void applyVariableWeight(FT_Library lib, FT_Face face,
     }
 }
 
+// Font directories opened before a sandbox, by path (with a trailing slash).
+std::mutex g_roots_mutex;
+std::vector<std::pair<std::string, int>> g_font_roots;
+
+// A face's file through a directory opened earlier, for when a path can't be opened
+// (a sandboxed app): its bytes, or nothing.
+std::shared_ptr<const std::string> readUnderRoot(const std::string& path) noexcept {
+    std::lock_guard lock(g_roots_mutex);
+    for (const auto& [dir, fd] : g_font_roots) {
+        if (path.compare(0, dir.size(), dir) != 0) continue;
+        const std::string rest = path.substr(dir.size());
+        if (rest.find("..") != std::string::npos) return nullptr;
+        const int f = openat(fd, rest.c_str(), O_RDONLY | O_CLOEXEC);
+        if (f < 0) continue;
+        struct stat st {};
+        auto bytes = std::make_shared<std::string>();
+        if (fstat(f, &st) == 0 && st.st_size > 0 && st.st_size < (64 << 20)) {
+            bytes->resize(static_cast<size_t>(st.st_size));
+            size_t got = 0;
+            while (got < bytes->size()) {
+                const ssize_t n = read(f, bytes->data() + got, bytes->size() - got);
+                if (n <= 0) break;
+                got += static_cast<size_t>(n);
+            }
+            if (got != bytes->size()) bytes.reset();
+        } else {
+            bytes.reset();
+        }
+        close(f);
+        return bytes;
+    }
+    return nullptr;
+}
+
 // From a file, or from memory if there are bytes.
 std::unique_ptr<FontFace> loadFace(const std::string& path,
                                     FontWeight         weight,
@@ -181,8 +221,18 @@ std::unique_ptr<FontFace> loadFace(const std::string& path,
         // Bitmap-only and the like can't be drawn at any size.
         if (!FT_IS_SCALABLE(f->ft_face_)) return nullptr;
     } else if (FT_New_Face(f->ft_lib_, path.c_str(), 0, &f->ft_face_)) {
-        std::cerr << "[xrender] FontManager: failed to load face: " << path << "\n";
-        return nullptr;
+        // In a sandbox a path can't be opened; a font directory opened before it can.
+        f->ft_face_ = nullptr;
+        if (auto bytes = readUnderRoot(path)) {
+            f->memory_ = std::move(bytes);
+            if (FT_New_Memory_Face(f->ft_lib_, reinterpret_cast<const FT_Byte*>(f->memory_->data()),
+                                   static_cast<FT_Long>(f->memory_->size()), 0, &f->ft_face_))
+                f->ft_face_ = nullptr;
+        }
+        if (!f->ft_face_) {
+            std::cerr << "[xrender] FontManager: failed to load face: " << path << "\n";
+            return nullptr;
+        }
     }
     FT_Set_Pixel_Sizes(f->ft_face_, 0, static_cast<FT_UInt>(GlyphCache::kRefSize));
 
@@ -204,6 +254,12 @@ void FontManager::init() noexcept {
     FcInit();
     g_fc_ready = true;
     std::cout << "[xrender] FontManager: Fontconfig ready.\n";
+}
+
+void FontManager::addFontRoot(const std::string& dir, int fd) noexcept {
+    if (fd < 0 || dir.empty()) return;
+    std::lock_guard lock(g_roots_mutex);
+    g_font_roots.emplace_back(dir.back() == '/' ? dir : dir + '/', fd);
 }
 
 void FontManager::cleanup() noexcept {
