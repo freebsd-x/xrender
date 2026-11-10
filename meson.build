@@ -46,4 +46,11 @@ if gtest_dep.found()
       include_directories : xrender_inc,
       dependencies        : [gtest_dep, xrender_dep]),
     suite : 'unit')
+  # Glyph distance fields: close to the outline's, quick to make.
+  test('xrender font_atlas',
+    executable('xrender_font_atlas_test',
+      'tests/unit/font_atlas_test.cc',
+      include_directories : xrender_inc,
+      dependencies        : [gtest_dep, xrender_dep]),
+    suite : 'unit')
 endif
