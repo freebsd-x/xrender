@@ -94,7 +94,11 @@ public:
     // Returns nullptr if no such font is installed.
     [[nodiscard]] static FontFace* getLastResortFace() noexcept;
 
-    // The fallback faces glyphs may come from, in order (emoji, last resort).
+    // Korean, Japanese and Chinese text the page's or UI's font lacks: the sans-serif
+    // fontconfig gives for Korean (then Japanese, Chinese), or nullptr.
+    [[nodiscard]] static FontFace* getCjkFace() noexcept;
+
+    // The fallback faces glyphs may come from, in order (emoji, CJK, last resort).
     [[nodiscard]] static FontFace* faceForId(uint32_t face_id, FontFace* primary) noexcept;
 
     // Pre-warm glyph cache: shape utf8_text with face and ensure every resulting

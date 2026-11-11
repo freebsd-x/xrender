@@ -77,6 +77,8 @@ std::unordered_map<FaceKey, FontFace*, FaceKeyHash> g_face_substitutes;
 std::unique_ptr<FontFace> g_emoji_face;
 std::unique_ptr<FontFace> g_last_resort_face;
 bool g_last_resort_tried = false;
+std::unique_ptr<FontFace> g_cjk_face;
+bool g_cjk_tried = false;
 std::mutex                g_mutex;
 std::atomic<uint32_t>     g_next_face_id{1};
 bool                      g_fc_ready{false};
@@ -268,6 +270,8 @@ void FontManager::cleanup() noexcept {
     g_emoji_face.reset();
     g_last_resort_face.reset();
     g_last_resort_tried = false;
+    g_cjk_face.reset();
+    g_cjk_tried = false;
     FcFini();
 }
 
@@ -391,8 +395,53 @@ FontFace* FontManager::getLastResortFace() noexcept {
     return g_last_resort_face.get();
 }
 
+// The sans-serif fontconfig picks for a language: the file, if any.
+static std::string sansForLanguage(const char* lang) noexcept {
+    FcPattern* pat = FcPatternCreate();
+    if (!pat) return {};
+    FcPatternAddString(pat, FC_FAMILY, reinterpret_cast<const FcChar8*>("sans-serif"));
+    FcPatternAddString(pat, FC_LANG, reinterpret_cast<const FcChar8*>(lang));
+    FcConfigSubstitute(nullptr, pat, FcMatchPattern);
+    FcDefaultSubstitute(pat);
+    FcResult result;
+    FcPattern* match = FcFontMatch(nullptr, pat, &result);
+    FcPatternDestroy(pat);
+    if (!match) return {};
+    FcChar8* file = nullptr;
+    std::string path;
+    if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch) path = reinterpret_cast<const char*>(file);
+    FcPatternDestroy(match);
+    return path;
+}
+
+FontFace* FontManager::getCjkFace() noexcept {
+    {
+        std::lock_guard lk(g_mutex);
+        if (g_cjk_tried) return g_cjk_face.get();
+    }
+    // Korean first (its fonts carry Hangul and the common ideographs), then Japanese and
+    // Chinese; a face counts if it has 가 or 中.
+    std::unique_ptr<FontFace> found;
+    for (const char* lang : {"ko", "ja", "zh-cn", "zh-tw"}) {
+        const std::string path = sansForLanguage(lang);
+        if (path.empty()) continue;
+        auto face = loadFace(path, FontWeight::Regular, FontStyle::Normal);
+        if (face && face->ft_face_ && (FT_Get_Char_Index(face->ft_face_, 0xAC00) != 0 || FT_Get_Char_Index(face->ft_face_, 0x4E2D) != 0)) {
+            found = std::move(face);
+            break;
+        }
+    }
+    std::lock_guard lk(g_mutex);
+    if (!g_cjk_tried) {
+        g_cjk_tried = true;
+        g_cjk_face = std::move(found);
+    }
+    return g_cjk_face.get();
+}
+
 FontFace* FontManager::faceForId(uint32_t face_id, FontFace* primary) noexcept {
     if (FontFace* e = getEmojiFace(); e && e->face_id_ == face_id) return e;
+    if (FontFace* c = getCjkFace(); c && c->face_id_ == face_id) return c;
     if (FontFace* l = getLastResortFace(); l && l->face_id_ == face_id) return l;
     return primary;
 }

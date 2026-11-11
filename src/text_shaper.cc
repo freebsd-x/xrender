@@ -130,6 +130,10 @@ TextShaper::shapeText(const std::string& utf8_text,
     // Glyphs the primary font lacks: re-shape each run of them with the emoji
     // face, then whatever is still missing with the last-resort face.
     fillMissing(utf8_text, emoji_font, emoji_face_id, result);
+    const bool missing = std::any_of(result.begin(), result.end(), [](const ShapedGlyph& g) { return g.glyph_index_ == 0; });
+    if (missing)
+        if (FontFace* cjk = FontManager::getCjkFace())
+            fillMissing(utf8_text, cjk->hb_font_, cjk->face_id_, result);
     if (FontFace* last = FontManager::getLastResortFace())
         fillMissing(utf8_text, last->hb_font_, last->face_id_, result);
     return result;
