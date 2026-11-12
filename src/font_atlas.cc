@@ -35,17 +35,21 @@ bool GlyphCache::allocateTile(uint32_t w, uint32_t h,
 
         uint32_t x = pg.cursor_x;
         uint32_t y = pg.cursor_y;
+        uint32_t row_height = pg.row_height;
 
         if (x + w + 1 >= kPageSize) {
             // Wrap to next row.
             x = 1;
             y = pg.cursor_y + pg.row_height + 1;
-            pg.row_height = 0;
+            row_height = 0;
         }
 
-        if (y + h + 1 >= kPageSize) continue; // This page is full.
+        // This page is full. (Nothing about it changes: the row height used to be zeroed
+        // here, so the next glyph's "next row" began inside the last one and drew over
+        // the glyphs there.)
+        if (y + h + 1 >= kPageSize) continue;
 
-        if (h > pg.row_height) pg.row_height = h;
+        pg.row_height = std::max(row_height, h);
         pg.cursor_x = x + w + 1;
         pg.cursor_y = y;
 

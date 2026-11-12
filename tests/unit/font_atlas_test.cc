@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -85,6 +86,42 @@ TEST(FontAtlas, MakingGlyphsIsQuick) {
     // ~30 alone; loose, for the suite runs tests side by side: it catches a slowdown many
     // times over, not noise.
     EXPECT_LT(ms, 200.0);
+    FT_Done_Face(face);
+    FT_Done_FreeType(lib);
+}
+
+TEST(FontAtlas, GlyphsNeverShareSpace) {
+    // A Korean page fills more than a page of the atlas. The row height used to be lost
+    // when a page turned out full, and later glyphs were packed over earlier ones.
+    const char* path = "/usr/local/share/fonts/nanum/NanumGothic.ttf";
+    if (!std::filesystem::exists(path)) GTEST_SKIP() << "no CJK font";
+    FT_Library lib;
+    ASSERT_EQ(FT_Init_FreeType(&lib), 0);
+    FT_Face face;
+    ASSERT_EQ(FT_New_Face(lib, path, 0, &face), 0);
+    auto cache = GlyphCache::create();
+    ASSERT_TRUE(cache);
+    std::vector<uint32_t> ids;
+    for (uint32_t g = 1; g < static_cast<uint32_t>(face->num_glyphs) && cache->getPageCount() < 3; ++g) {
+        ASSERT_TRUE(cache->addGlyph(face, 1, g));
+        ids.push_back(g);
+    }
+    EXPECT_GE(cache->getPageCount(), 2u);
+    struct Box { uint32_t page; float x0, y0, x1, y1; };
+    std::vector<Box> boxes;
+    for (uint32_t g : ids) {
+        const GlyphMetric* m = cache->lookup(1, g);
+        ASSERT_NE(m, nullptr);
+        if (m->width_ == 0) continue;
+        boxes.push_back({m->page_, m->atlas_u_, m->atlas_v_, m->atlas_u2_, m->atlas_v2_});
+    }
+    // Sweep by page and left edge: neighbours only.
+    std::sort(boxes.begin(), boxes.end(), [](const Box& a, const Box& b) { return a.page != b.page ? a.page < b.page : a.y0 < b.y0; });
+    size_t overlaps = 0;
+    for (size_t i = 0; i < boxes.size(); ++i)
+        for (size_t j = i + 1; j < boxes.size() && boxes[j].page == boxes[i].page && boxes[j].y0 < boxes[i].y1; ++j)
+            if (boxes[j].x0 < boxes[i].x1 && boxes[i].x0 < boxes[j].x1 && boxes[j].y0 < boxes[i].y1 && boxes[i].y0 < boxes[j].y1) ++overlaps;
+    EXPECT_EQ(overlaps, 0u);
     FT_Done_Face(face);
     FT_Done_FreeType(lib);
 }
