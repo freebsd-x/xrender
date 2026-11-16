@@ -1,4 +1,9 @@
 #include "xrender/font_atlas.h"
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
+#include <atomic>
 
 
 #include <algorithm>
@@ -293,6 +298,140 @@ bool GlyphCache::addGlyph(FT_Face ft_face,
 
     dirty_ = true;
     return true;
+}
+
+namespace {
+
+// How many cores, asked when the library loads: an app's sandbox (Capsicum) refuses
+// the question later.
+const unsigned g_cores = std::max(1u, std::thread::hardware_concurrency());
+
+// Workers for distance fields, made the first time they're wanted and kept: a thread
+// that ends inside the sandbox has the C runtime try to open a library for unwinding,
+// which the sandbox refuses (sandbox-audit).
+class SdfPool {
+public:
+    static SdfPool& get() {
+        static SdfPool* pool = new SdfPool();   // never destroyed: its threads never end
+        return *pool;
+    }
+    // Runs job(i) for i in [0, n), on the workers and this thread; back when all are done.
+    void run(size_t n, const std::function<void(size_t)>& job) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        job_ = &job;
+        n_ = n;
+        next_ = 0;
+        pending_ = n;
+        ++round_;
+        lock.unlock();
+        wake_.notify_all();
+        work();
+        lock.lock();
+        done_.wait(lock, [&] { return pending_ == 0; });
+        job_ = nullptr;
+    }
+
+private:
+    SdfPool() {
+        for (unsigned i = 1; i < std::min(g_cores, 8u); ++i) std::thread([this] { loop(); }).detach();
+    }
+    void loop() {
+        uint64_t seen = 0;
+        for (;;) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            wake_.wait(lock, [&] { return round_ != seen && job_ && next_ < n_; });
+            seen = round_;
+            lock.unlock();
+            work();
+        }
+    }
+    void work() {
+        for (;;) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (!job_ || next_ >= n_) return;
+            const size_t i = next_++;
+            const std::function<void(size_t)>* job = job_;
+            lock.unlock();
+            (*job)(i);
+            lock.lock();
+            if (--pending_ == 0) done_.notify_all();
+        }
+    }
+    std::mutex mutex_;
+    std::condition_variable wake_, done_;
+    const std::function<void(size_t)>* job_ = nullptr;
+    size_t n_ = 0, next_ = 0, pending_ = 0;
+    uint64_t round_ = 0;
+};
+
+}  // namespace
+
+void GlyphCache::addGlyphs(FT_Face ft_face, uint32_t face_id, const std::vector<uint32_t>& glyph_ids) noexcept {
+    constexpr size_t kParallelFrom = 6;   // fewer: not worth the threads
+    std::vector<uint32_t> todo;
+    for (const uint32_t g : glyph_ids)
+        if (!metrics_.count({face_id, g}) && std::find(todo.begin(), todo.end(), g) == todo.end()) todo.push_back(g);
+    if (todo.size() < kParallelFrom) {
+        for (const uint32_t g : todo) addGlyph(ft_face, face_id, g);
+        return;
+    }
+    struct Raster {
+        uint32_t glyph = 0;
+        bool ok = false;
+        std::vector<uint8_t> pixels;
+        FT_Bitmap bitmap{};
+        float advance = 0, bearing_x = 0, bearing_y = 0;
+        std::vector<uint8_t> sdf;
+    };
+    std::vector<Raster> rasters(todo.size());
+    FT_Set_Pixel_Sizes(ft_face, 0, static_cast<FT_UInt>(kRefSize));
+    for (size_t i = 0; i < todo.size(); ++i) {
+        Raster& r = rasters[i];
+        r.glyph = todo[i];
+        if (FT_Load_Glyph(ft_face, r.glyph, FT_LOAD_DEFAULT)) continue;
+        if (FT_Render_Glyph(ft_face->glyph, FT_RENDER_MODE_NORMAL) && ft_face->glyph->format != FT_GLYPH_FORMAT_BITMAP) continue;
+        const FT_Bitmap& bm = ft_face->glyph->bitmap;
+        // The slot's bitmap is the next glyph's soon: a copy of it, rows packed.
+        const int pitch = bm.pitch < 0 ? -bm.pitch : bm.pitch;
+        r.pixels.assign(bm.buffer, bm.buffer + static_cast<size_t>(pitch) * bm.rows);
+        r.bitmap = bm;
+        r.bitmap.pitch = pitch;
+        r.bitmap.buffer = r.pixels.data();
+        r.advance = static_cast<float>(ft_face->glyph->advance.x >> 6);
+        r.bearing_x = static_cast<float>(ft_face->glyph->bitmap_left) - static_cast<float>(kSdfSpread);
+        r.bearing_y = static_cast<float>(ft_face->glyph->bitmap_top) + static_cast<float>(kSdfSpread);
+        r.ok = true;
+    }
+    SdfPool::get().run(rasters.size(), [&](size_t i) {
+        if (rasters[i].ok) rasters[i].sdf = computeSdf(&rasters[i].bitmap, kSdfSpread);
+    });
+    const float ps = static_cast<float>(kPageSize);
+    for (const Raster& r : rasters) {
+        if (!r.ok) {
+            metrics_[{face_id, r.glyph}] = GlyphMetric{};   // so it isn't tried again every frame
+            continue;
+        }
+        const uint32_t sdfW = r.bitmap.width + static_cast<uint32_t>(kSdfSpread * 2);
+        const uint32_t sdfH = r.bitmap.rows + static_cast<uint32_t>(kSdfSpread * 2);
+        uint32_t tx, ty, tp;
+        if (!allocateTile(sdfW, sdfH, tx, ty, tp)) return;
+        auto& pg = pages_[tp];
+        for (uint32_t row = 0; row < sdfH; ++row)
+            std::copy_n(r.sdf.data() + static_cast<size_t>(row) * sdfW, sdfW, pg.bitmap.data() + (ty + row) * kPageSize + tx);
+        metrics_[{face_id, r.glyph}] = GlyphMetric{
+            .advance_x_ = r.advance,
+            .bearing_x_ = r.bearing_x,
+            .bearing_y_ = r.bearing_y,
+            .width_ = static_cast<float>(sdfW),
+            .height_ = static_cast<float>(sdfH),
+            .atlas_u_ = static_cast<float>(tx) / ps,
+            .atlas_v_ = static_cast<float>(ty) / ps,
+            .atlas_u2_ = static_cast<float>(tx + sdfW) / ps,
+            .atlas_v2_ = static_cast<float>(ty + sdfH) / ps,
+            .page_ = tp,
+        };
+        dirty_ = true;
+    }
 }
 
 const std::vector<uint8_t>& GlyphCache::getPageBitmap(uint32_t page) const noexcept {

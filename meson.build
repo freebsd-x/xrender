@@ -26,13 +26,13 @@ xrender_inc = include_directories(
 libxrender = static_library('xrender',
   xrender_app_srcs,
   include_directories : xrender_inc,
-  dependencies        : [freetype_dep, harfbuzz_dep, fontconfig_dep, libpng_dep, vulkan_dep],
+  dependencies        : [freetype_dep, harfbuzz_dep, fontconfig_dep, libpng_dep, vulkan_dep, dependency('threads')],
 )
 
 xrender_dep = declare_dependency(
   link_with           : libxrender,
   include_directories : xrender_inc,
-  dependencies        : [freetype_dep, harfbuzz_dep, fontconfig_dep, libpng_dep, vulkan_dep],
+  dependencies        : [freetype_dep, harfbuzz_dep, fontconfig_dep, libpng_dep, vulkan_dep, dependency('threads')],
 )
 
 # ── meson unit tests ──────────────────────────────────────────────────────────

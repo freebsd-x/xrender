@@ -64,6 +64,10 @@ public:
     // Rasterize a glyph from ft_face (sized at kRefSize) and insert it.
     // Returns false only if the atlas is catastrophically full (very rare).
     bool addGlyph(FT_Face ft_face, uint32_t face_id, uint32_t glyph_id) noexcept;
+    // Several of one face's at once: rasterised one after another (FreeType's slot is
+    // the face's), their distance fields worked out side by side on worker threads, then
+    // packed. A page of Korean text is hundreds of glyphs never seen before.
+    void addGlyphs(FT_Face ft_face, uint32_t face_id, const std::vector<uint32_t>& glyph_ids) noexcept;
 
     [[nodiscard]] bool     isDirty()    const noexcept { return dirty_; }
     void                   clearDirty() noexcept       { dirty_ = false; }

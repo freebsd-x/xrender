@@ -1,4 +1,5 @@
 #include "xrender/font_manager.h"
+#include <algorithm>
 #include "xrender/font_atlas.h"
 #include "xrender/text_shaper.h"
 
@@ -461,14 +462,20 @@ void FontManager::ensureGlyphs(const std::string& utf8_text,
                                      emoji ? emoji->hb_font_ : nullptr,
                                      emoji ? emoji->face_id_ : 0);
 
+    // Those not made yet, by the face each was resolved against (the primary, the
+    // emoji face or the last-resort face), made a face's at a time.
+    std::vector<std::pair<uint32_t, std::vector<uint32_t>>> missing;
     for (const auto& g : glyphs) {
         if (g.glyph_index_ == 0) continue; // uncovered by every face — nothing to add
         if (cache.lookup(g.face_id_, g.glyph_index_)) continue;
-        // Rasterise each glyph from the face it was resolved against (the
-        // primary, the emoji face or the last-resort face).
-        FontFace* from = faceForId(g.face_id_, face);
+        auto it = std::find_if(missing.begin(), missing.end(), [&](const auto& m) { return m.first == g.face_id_; });
+        if (it == missing.end()) it = missing.insert(missing.end(), {g.face_id_, {}});
+        it->second.push_back(g.glyph_index_);
+    }
+    for (const auto& [face_id, ids] : missing) {
+        FontFace* from = faceForId(face_id, face);
         FT_Face ft = from ? from->ft_face_ : nullptr;
-        if (ft) cache.addGlyph(ft, g.face_id_, g.glyph_index_);
+        if (ft) cache.addGlyphs(ft, face_id, ids);
     }
 }
 
