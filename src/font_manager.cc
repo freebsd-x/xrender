@@ -420,18 +420,27 @@ FontFace* FontManager::getCjkFace() noexcept {
         std::lock_guard lk(g_mutex);
         if (g_cjk_tried) return g_cjk_face.get();
     }
-    // Korean first (its fonts carry Hangul and the common ideographs), then Japanese and
-    // Chinese; a face counts if it has 가 or 中.
-    std::unique_ptr<FontFace> found;
+    // One face for Korean, Japanese and Chinese text alike: the first that has Hangul,
+    // kana and both Japan's and China's ideographs (Noto Sans CJK), else the first with Hangul or
+    // ideographs (Nanum: Korean, but Japanese kana would be missing).
+    std::unique_ptr<FontFace> found, partial;
     for (const char* lang : {"ko", "ja", "zh-cn", "zh-tw"}) {
         const std::string path = sansForLanguage(lang);
         if (path.empty()) continue;
         auto face = loadFace(path, FontWeight::Regular, FontStyle::Normal);
-        if (face && face->ft_face_ && (FT_Get_Char_Index(face->ft_face_, 0xAC00) != 0 || FT_Get_Char_Index(face->ft_face_, 0x4E2D) != 0)) {
+        if (!face || !face->ft_face_) continue;
+        const auto has = [&](FT_ULong c) { return FT_Get_Char_Index(face->ft_face_, c) != 0; };
+        // (Korean fonts have kana too, from KS X 1001, but not Japan's own simplified
+        // kanji: 検 画 図; nor China's: 们 这.)
+        const bool hangul = has(0xAC00), han = has(0x4E2D),
+                   kana = has(0x3042) && has(0x691C) && has(0x753B) && has(0x56F3) && has(0x4EEC) && has(0x8FD9);
+        if (hangul && kana && han) {
             found = std::move(face);
             break;
         }
+        if (!partial && (hangul || han)) partial = std::move(face);
     }
+    if (!found) found = std::move(partial);
     std::lock_guard lk(g_mutex);
     if (!g_cjk_tried) {
         g_cjk_tried = true;
