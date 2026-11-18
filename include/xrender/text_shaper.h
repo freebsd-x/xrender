@@ -36,7 +36,8 @@ public:
               hb_font_t*         primary_font,
               uint32_t           primary_face_id,
               hb_font_t*         emoji_font    = nullptr,
-              uint32_t           emoji_face_id = 0) noexcept;
+              uint32_t           emoji_face_id = 0,
+              int                korean_first  = -1) noexcept;   // -1: when the text has Hangul
 
     // Process-wide singleton (created on first call).
     [[nodiscard]] static TextShaper& getInstance() noexcept;

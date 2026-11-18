@@ -116,7 +116,8 @@ TextShaper::shapeText(const std::string& utf8_text,
                        hb_font_t*         primary_font,
                        uint32_t           primary_face_id,
                        hb_font_t*         emoji_font,
-                       uint32_t           emoji_face_id) noexcept {
+                       uint32_t           emoji_face_id,
+                       int                korean_first) noexcept {
     std::vector<ShapedGlyph> result;
     if (!primary_font || utf8_text.empty()) return result;
 
@@ -131,9 +132,14 @@ TextShaper::shapeText(const std::string& utf8_text,
     // face, then whatever is still missing with the last-resort face.
     fillMissing(utf8_text, emoji_font, emoji_face_id, result);
     const bool missing = std::any_of(result.begin(), result.end(), [](const ShapedGlyph& g) { return g.glyph_index_ == 0; });
-    if (missing)
+    if (missing) {
+        // Korean text: its own font first (Nanum), then the pan-CJK one for the rest.
+        if (korean_first < 0 ? FontManager::hasHangul(utf8_text) : korean_first > 0)
+            if (FontFace* ko = FontManager::getHangulFace())
+                fillMissing(utf8_text, ko->hb_font_, ko->face_id_, result);
         if (FontFace* cjk = FontManager::getCjkFace())
             fillMissing(utf8_text, cjk->hb_font_, cjk->face_id_, result);
+    }
     if (FontFace* last = FontManager::getLastResortFace())
         fillMissing(utf8_text, last->hb_font_, last->face_id_, result);
     return result;

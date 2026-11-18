@@ -97,6 +97,8 @@ public:
     // Korean, Japanese and Chinese text the page's or UI's font lacks: the sans-serif
     // fontconfig gives for Korean (then Japanese, Chinese), or nullptr.
     [[nodiscard]] static FontFace* getCjkFace() noexcept;
+    [[nodiscard]] static FontFace* getHangulFace() noexcept;   // Korean text's fallback, before getCjkFace's
+    [[nodiscard]] static bool hasHangul(std::string_view utf8) noexcept;
 
     // The fallback faces glyphs may come from, in order (emoji, CJK, last resort).
     [[nodiscard]] static FontFace* faceForId(uint32_t face_id, FontFace* primary) noexcept;

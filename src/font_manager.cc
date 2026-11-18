@@ -80,6 +80,8 @@ std::unique_ptr<FontFace> g_last_resort_face;
 bool g_last_resort_tried = false;
 std::unique_ptr<FontFace> g_cjk_face;
 bool g_cjk_tried = false;
+std::unique_ptr<FontFace> g_hangul_face;
+bool g_hangul_tried = false;
 std::mutex                g_mutex;
 std::atomic<uint32_t>     g_next_face_id{1};
 bool                      g_fc_ready{false};
@@ -273,6 +275,8 @@ void FontManager::cleanup() noexcept {
     g_last_resort_tried = false;
     g_cjk_face.reset();
     g_cjk_tried = false;
+    g_hangul_face.reset();
+    g_hangul_tried = false;
     FcFini();
 }
 
@@ -449,9 +453,30 @@ FontFace* FontManager::getCjkFace() noexcept {
     return g_cjk_face.get();
 }
 
+// Korean text's own fallback: the system's Korean sans (Nanum here), for Hangul and
+// the Hanja beside it; Japanese and Chinese text keeps getCjkFace's.
+FontFace* FontManager::getHangulFace() noexcept {
+    {
+        std::lock_guard lk(g_mutex);
+        if (g_hangul_tried) return g_hangul_face.get();
+    }
+    std::unique_ptr<FontFace> found;
+    if (const std::string path = sansForLanguage("ko"); !path.empty()) {
+        auto face = loadFace(path, FontWeight::Regular, FontStyle::Normal);
+        if (face && face->ft_face_ && FT_Get_Char_Index(face->ft_face_, 0xAC00) != 0) found = std::move(face);
+    }
+    std::lock_guard lk(g_mutex);
+    if (!g_hangul_tried) {
+        g_hangul_tried = true;
+        g_hangul_face = std::move(found);
+    }
+    return g_hangul_face.get();
+}
+
 FontFace* FontManager::faceForId(uint32_t face_id, FontFace* primary) noexcept {
     if (FontFace* e = getEmojiFace(); e && e->face_id_ == face_id) return e;
     if (FontFace* c = getCjkFace(); c && c->face_id_ == face_id) return c;
+    if (FontFace* k = getHangulFace(); k && k->face_id_ == face_id) return k;
     if (FontFace* l = getLastResortFace(); l && l->face_id_ == face_id) return l;
     return primary;
 }
@@ -470,6 +495,14 @@ void FontManager::ensureGlyphs(const std::string& utf8_text,
                                      face->hb_font_, face->face_id_,
                                      emoji ? emoji->hb_font_ : nullptr,
                                      emoji ? emoji->face_id_ : 0);
+    // Text with Hangul in it may be a whole page's, its lines then shaped one at a time:
+    // its Japanese and Chinese lines take their ideographs from the other face, so
+    // those glyphs too.
+    if (hasHangul(utf8_text)) {
+        auto others = shaper.shapeText(utf8_text, face->hb_font_, face->face_id_, emoji ? emoji->hb_font_ : nullptr,
+                                       emoji ? emoji->face_id_ : 0, 0);
+        glyphs.insert(glyphs.end(), others.begin(), others.end());
+    }
 
     // Those not made yet, by the face each was resolved against (the primary, the
     // emoji face or the last-resort face), made a face's at a time.
@@ -534,6 +567,19 @@ FontManager::findFontPath(const std::string& family,
     if (path.empty())
         return std::unexpected(std::make_error_code(std::errc::no_such_file_or_directory));
     return path;
+}
+
+bool FontManager::hasHangul(std::string_view s) noexcept {
+    // Three-byte UTF-8 sequences decoded just enough: syllables (AC00–D7A3) and jamo
+    // (1100–11FF, 3130–318F).
+    for (size_t i = 0; i + 2 < s.size(); ++i) {
+        const auto b0 = static_cast<unsigned char>(s[i]);
+        if ((b0 & 0xF0) != 0xE0) continue;
+        const uint32_t c = ((b0 & 0x0Fu) << 12) | ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 6) | (static_cast<unsigned char>(s[i + 2]) & 0x3Fu);
+        if ((c >= 0xAC00 && c <= 0xD7A3) || (c >= 0x1100 && c <= 0x11FF) || (c >= 0x3130 && c <= 0x318F)) return true;
+        i += 2;
+    }
+    return false;
 }
 
 } // namespace fbx::xrender
